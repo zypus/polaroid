@@ -1,5 +1,4 @@
 import androidx.compose.animation.core.*
-import androidx.compose.animation.transition
 import androidx.compose.desktop.AppManager
 import androidx.compose.desktop.AppWindow
 import androidx.compose.desktop.Window
@@ -32,13 +31,11 @@ import jetbrains.exodus.env.Transaction
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.channels.actor
-import org.jetbrains.skija.Image
 import java.awt.Cursor
 import java.awt.Point
 import java.awt.Window
 import java.awt.image.BufferedImage
 import java.io.File
-import java.lang.Boolean
 import java.lang.reflect.Method
 import javax.swing.JFrame
 
@@ -71,13 +68,10 @@ enum class BufferState {
     }
 }
 
-val imageIndex = IntPropKey()
-val progress = FloatPropKey()
-
 fun enableOSXFullscreen(window: Window?) {
     try {
         val util = Class.forName("com.apple.eawt.FullScreenUtilities")
-        val params = arrayOf<Class<*>>(Window::class.java, Boolean.TYPE)
+        val params = arrayOf<Class<*>>(Window::class.java, java.lang.Boolean.TYPE)
         val method: Method = util.getMethod("setWindowCanFullScreen", *params)
         method.invoke(util, window, true)
     } catch (ex: Exception) {
@@ -295,40 +289,34 @@ fun main() = runBlocking {
         var searchPath by remember { mutableStateOf(sourceDir.absolutePath) }
         var editedPath by remember { mutableStateOf(sourceDir.absolutePath) }
         val validPath = remember(editedPath) { File(editedPath).exists() }
-        var bufferState by remember { mutableStateOf(BufferState.BUFFER1) }
+        val bufferState = MutableTransitionState(BufferState.BUFFER1)
+        bufferState.targetState = BufferState.BUFFER2
         var duration by remember { mutableStateOf(initDuration) }
         var editedDuration by remember { mutableStateOf(initDuration) }
         var showPath by remember { mutableStateOf(initShowPath) }
         var editedShowPath by remember { mutableStateOf(initShowPath) }
 
-        val transDef = remember(duration, bufferState) {
-            transitionDefinition<BufferState> {
+        val transition = rememberInfiniteTransition()
 
-                state(BufferState.BUFFER1) {
-                    this[imageIndex] = 0
-                    this[progress] = 0f
-                }
-                state(BufferState.BUFFER2) {
-                    this[imageIndex] = 1
-                    this[progress] = 1f
-                }
-
-                transition(BufferState.BUFFER1 to BufferState.BUFFER2) {
-                    imageIndex using snap(duration * 1000)
-                    progress using tween(duration * 1000)
-                }
-                transition(BufferState.BUFFER2 to BufferState.BUFFER1) {
-                    imageIndex using snap(duration * 1000)
-                    progress using tween(duration * 1000)
-                }
+        var lastTargetValue by remember { mutableStateOf(1f) }
+        val targetValue = remember(duration) {
+            lastTargetValue = if (lastTargetValue < 1f) {
+                1f
+            } else {
+                0.9999f
             }
+            lastTargetValue
         }
 
-        val state = transition(
-            transDef,
-            initState = bufferState,
-            toState = bufferState.otherState()
-        )
+        val progress by transition.animateFloat(
+                initialValue = 0f,
+                targetValue = targetValue,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(duration * 1000),
+                    repeatMode = RepeatMode.Reverse
+                )
+            )
+
 
         if (!settingsOpen) {
             updateSetting(
@@ -365,11 +353,13 @@ fun main() = runBlocking {
         }
 
 
-        var index by remember { mutableStateOf(0) }
-        resolveBufferState(state, index, bufferState) { bufferState = it }
-        resolveIndex(state, index) { index = it }
+
         val (photo, setPhoto) = remember { mutableStateOf<PhotoMeta?>(null) }
-        randomPhotoFile(searchPath, index, settingsOpen, setPhoto, randomPhotoActor)
+        val (lastProgress, setLastProgress) = remember { mutableStateOf(0f) }
+        val (imageIndex, setImageIndex) = remember { mutableStateOf(0) }
+        resolveIndex(progress, lastProgress, imageIndex, setImageIndex)
+        setLastProgress(progress)
+        randomPhotoFile(searchPath, imageIndex, settingsOpen, setPhoto, randomPhotoActor)
 
         Column(modifier = Modifier.fillMaxSize()) {
 
@@ -382,13 +372,13 @@ fun main() = runBlocking {
                         }) {
                             Text("Speichern")
                         }
-                        Spacer(modifier = Modifier.preferredSize(padding))
+                        Spacer(modifier = Modifier.size(padding))
                         TextField(editedPath, label = {
                             Text("Bilderverzeichnis")
-                        }, maxLines = 1, onValueChange = {
-                            editedPath = it
-                        }, isErrorValue = !validPath)
-                        Spacer(modifier = Modifier.preferredSize(padding))
+                        }, maxLines = 1, onValueChange = { value: String ->
+                                editedPath = value
+                        }, isError = !validPath)
+                        Spacer(modifier = Modifier.size(padding))
                         var validDuration by remember(duration) { mutableStateOf(true) }
                         TextField(if (editedDuration > 0) editedDuration.toString() else "", label = {
                             Text("Anzeige Dauer (in Sekunden)")
@@ -404,15 +394,15 @@ fun main() = runBlocking {
                             } else {
                                 validDuration = false
                             }
-                        }, isErrorValue = !validDuration)
-                        Spacer(modifier = Modifier.preferredSize(padding))
+                        }, isError = !validDuration)
+                        Spacer(modifier = Modifier.size(padding))
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text("Bildpfad anzeigen")
                             Switch(editedShowPath, onCheckedChange = {
                                 editedShowPath = it
                             })
                         }
-                        Spacer(modifier = Modifier.preferredSize(padding))
+                        Spacer(modifier = Modifier.size(padding))
                         Button(onClick = {
                             if (photo != null) {
                                 val photoCopy = photo.copy()
@@ -439,7 +429,7 @@ fun main() = runBlocking {
             Column(
                 modifier = Modifier.fillMaxSize().background(Color.Black)
             ) {
-                Photo(photo, duration, if (index == 0) state[progress] else 1 - state[progress], editedShowPath)
+                Photo(photo, duration, if (imageIndex == 0) progress else 1 - progress, editedShowPath, settingsOpen)
             }
         }
 
@@ -448,25 +438,22 @@ fun main() = runBlocking {
 }
 
 @Composable
-fun Test(state: TransitionState) {
-    println(state[imageIndex])
-}
-
-@Composable
-fun resolveIndex(state: TransitionState, index: Int, setIndex: (Int) -> Unit) {
-    if (index != state[imageIndex]) {
-        setIndex(state[imageIndex])
+fun resolveIndex(progress: Float, lastProgress: Float, index: Int, setIndex: (Int) -> Unit) {
+    if (progress > lastProgress) {
+        setIndex(0)
+    } else if (progress < lastProgress) {
+        setIndex(1)
     }
 }
 
 @Composable
 fun resolveBufferState(
-    state: TransitionState,
+    imageIndex: Int,
     index: Int,
     bufferState: BufferState,
     setBufferState: (BufferState) -> Unit
 ) {
-    if (index != state[imageIndex]) {
+    if (index != imageIndex) {
         setBufferState(bufferState.otherState())
     }
 }
@@ -476,22 +463,24 @@ fun Photo(
     photo: PhotoMeta?,
     duration: Int,
     photoProgress: Float,
-    showPath: kotlin.Boolean
+    showPath: kotlin.Boolean,
+    settingOpen: kotlin.Boolean
 ) {
     val image = remember(photo?.path) { if (photo != null) imageFromFile(photo.path.toFile()) else null }
     if (photo != null && image != null) {
         Box {
             Image(
                 bitmap = image,
+                contentDescription = "Slideshow Image",
                 modifier = Modifier.fillMaxSize().alpha(if (photo.hidden) 0.5f else 1f)
             )
-            if (showPath && (photoProgress > 0.8 || duration < 4)) {
+            if ((showPath && (photoProgress > 0.8 || duration < 4)) || settingOpen) {
                 Text(
                     photo.path, color = Color.White,
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .background(Color.Black)
-                        .alpha(if (duration < 4) 1f else (photoProgress - 0.8f) / 0.2f)
+                        .alpha(if (duration < 4 || settingOpen) 1f else (photoProgress - 0.8f) / 0.2f)
                         .padding(10.dp)
                 )
             }
@@ -601,7 +590,7 @@ fun randomImageFile(sourcePath: String, entityStore: PersistentEntityStore): Fil
 
 fun imageFromFile(file: File): ImageBitmap? {
     return try {
-        Image.makeFromEncoded(file.readBytes()).asImageBitmap()
+        org.jetbrains.skija.Image.makeFromEncoded(file.readBytes()).asImageBitmap()
     } catch (e: Exception) {
         println("Error while loading image from file '$file':")
         println(e.localizedMessage)
